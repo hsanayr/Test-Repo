@@ -1,0 +1,376 @@
+/*
+Programmer: Ryan Ash
+Company: Sound Image
+Project Number:
+Date:
+History:   
+*/
+/* Compiler Directives */
+#Symbol_Name "Simple Automated Level Control v1"
+#Enable_Stack_Checking
+#Default_Volatile
+#Enable_Trace
+#Define_Constant true 1
+#Define_Constant false 0
+#Define_Constant NDEBUG false	//set to true to enable debugging
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/* DEBUG Function Overview 																		    			*/
+/* - Functions with DEBUG in thier value only write to trace when DEBUG constant is defined as true.			*/
+/* debug(string header, string value, DEBUG); 																	*/
+/* log_error(string header, string value); 																		*/
+/* log_warn(string header, string value); 																		*/
+/* log_info(string header, string value);																		*/
+/* check(condition, string header);	- checks that condition is true, logs error									*/
+/* check_debug(condition, string header, DEBUG); - checks that condition is true, logs debug					*/
+/* sentinel(condition, string header); - checks that condition is false, logs error								*/
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#USER_LIBRARY "debug_v2"
+
+#Define_Constant numOfLevels 10
+
+Structure LevelEvent
+{
+	integer enabled;
+	integer actuateLevel;
+	integer actuateHour;
+	integer actuateMin;
+};
+
+/* Inputs/Outputs */
+Digital_Input Enable, Level_press[numOfLevels];
+String_Input _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_,
+				_skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_,
+				_skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_,
+				Level_Text_In[numOfLevels][258], Level_Time_In[numOfLevels][258];
+
+Digital_Output MsgBox;
+String_Output Msg;
+Digital_Output Level_fb[numOfLevels], Send_Level[numOfLevels];
+Analog_Output Level_Out[numOfLevels];
+String_Output Level_Text_Out[numOfLevels], Level_Time_Out[numOfLevels];
+
+/* Global Variables */
+nonvolatile LevelEvent lvlEvent[numOfLevels];
+integer keepTime;
+
+/*Functions*/
+//Function for sending out the msgBox
+Function ShowMsg(string thisMsg)
+{
+	Msg = thisMsg;
+	Pulse(500, MsgBox);	
+}
+//Function for finding if there is an active event in use
+Integer_Function AutomationInUse()
+{
+ 	integer i, count;
+ 	
+ 	count = 0;
+ 	
+ 	for(i = 1 to numOfLevels)
+ 	{
+		if(Level_fb[i])
+		{
+			count = count + 1;
+		}		 		
+ 	}
+ 	return(count);
+}
+//Function for updating the Text Outputs
+Function UpdateOutputText(integer index)
+{
+	Level_Text_Out[index] = Level_Text_In[index];
+	Level_Time_Out[index] = Level_Time_In[index];
+}
+//Function for checking if a value needs to be recalled
+Function CheckRecall()
+{
+	integer curHour, curMin, i;
+	string tempMsg[64];
+	
+	curHour = gethournum();
+	curMin = getminutesnum();
+	
+	makestring(tempMsg,"CheckRecall fired at %d:%d", curHour, curMin);
+	
+	debug(tempMsg, "", NDEBUG);
+	
+	for(i = 1 to numOfLevels)
+	{
+		//is the level to be evaluated?
+		if(Level_fb[i])
+		{
+			if((lvlEvent[i].actuateHour = curHour) && (lvlEvent[i].actuateMin = curMin))	//if everything matches
+			{
+				debug("Sent Level for index at ", itoa(i), NDEBUG);
+				Level_Out[i] = lvlEvent[i].actuateLevel;	//send the value
+				Pulse(10, Send_Level[i]);	//pulse the digital
+			}			
+		}
+	}
+}
+//Function for Checking the time against the index of arrayed level events
+Function CheckTime()
+{
+	debug("CheckTime fired!","",NDEBUG);
+	if(Enable && (AutomationInUse() > 0))
+	{
+		//recall function
+		CheckRecall();
+	}
+	wait(6000, Check_Time)
+	{
+		CheckTime();		
+	}
+}
+//Function for storing the level value into the nonvolatile array
+Integer_Function StoreLevel(string str, integer index)
+{
+	integer level;
+	
+	debug("StoreLevel fired! Value of ", str, NDEBUG);
+	
+	if(find("%", str))
+		level = atoi(left(str, find("%", str) - 1));
+	else
+		level = atoi(str);
+		
+	if(level >= 0 && level <= 100)	//keep the return within the range
+	{
+		lvlEvent[index].actuateLevel = level;
+		debug("Level Value stored at index ", itoa(index), NDEBUG);
+		return(true);
+	}
+	else		
+		return(false);	
+}
+//Function for checking for bad chars in Level Text field. True if good, false if not
+Integer_Function CheckLevelText(integer index)
+{
+	integer i, char, result;
+	
+	result = true;
+	
+	debug("CheckLevelText fired!", "", NDEBUG);
+			
+	for(i = 1 to len(Level_Text_In[index]))
+	{
+		char = byte(Level_Text_In[index], i);
+		if(!((char <= 57 && char >= 48) || char = 37))
+		{
+			debug("CheckLevelText failed at char:", itohex(char), NDEBUG);
+			result = false;
+			break;
+		} 		
+	}
+	
+	if(result)
+	{
+		result = StoreLevel(Level_Text_In[index], index);
+		return(result);		
+	}
+	else
+		return(result);
+}
+//Function for storing the Level from the text field into the variable
+Integer_Function StoreTime(string str, integer index)
+{
+	integer hour, first, minute, result;
+	
+	result = true;
+	first = find(":", str);
+	hour = atoi(left(str, first - 1));
+	minute = atoi(mid(str, first + 1, 2));
+
+	if(find("PM", str))
+	{
+		if(hour = 12)	//no addition needed
+			lvlEvent[index].actuateHour = hour;
+		else if(hour < 12)
+			lvlEvent[index].actuateHour = hour + 12;	
+		else
+			result = false;			
+	}
+	else if(find("AM", str))
+	{
+		if(hour = 12)	//subtract
+			lvlEvent[index].actuateHour = 0;
+		else if(hour < 12)	//no subtraction needed
+			lvlEvent[index].actuateHour = hour;
+		else
+			result = false;		
+	}
+	else
+		return(false);
+	
+	if((minute >= 0) && (minute <= 59))	//make sure the minute scaling is correct
+		lvlEvent[index].actuateMin = minute;
+	else
+		result = false;
+	
+	if(result)
+	{
+		debug("Time Values stored at index ", itoa(index), NDEBUG);
+		debug("Hour stored at index ", itoa(lvlEvent[index].actuateHour), NDEBUG);
+		debug("Minute stored at index ", itoa(lvlEvent[index].actuateMin), NDEBUG);
+	}
+			
+	return(result);		
+}
+//Function for checking for bad chars in Level Time field. True if good, false if not
+Integer_Function CheckLevelTime(integer index)
+{
+	integer i, char, result;
+	
+	result = true;
+	
+	debug("CheckLevelTime fired!", "", NDEBUG);
+			
+	for(i = 1 to len(Level_Time_In[index]))
+	{
+		char = byte(Level_Time_In[index], i);
+		if(!((char <= 58 && char >= 48) || char = 65 || char = 80 || char = 77 || char = 32))
+		{
+			debug("CheckLevelTime failed at char:", itohex(char), NDEBUG);
+			result = false;
+			break;
+		} 		
+	}
+	
+	if(result)
+	{
+		result = StoreTime(Level_Time_In[index], index);
+		return(result);
+	}
+	else
+		return(result);
+}
+//Function for storing and enableing the event
+Function EnableEvent(integer index)
+{
+	Level_fb[index] = true;
+	lvlEvent[index].enabled = true;
+}
+//Function for storing and enableing the event
+Function DisableEvent(integer index)
+{
+	Level_fb[index] = false;
+	lvlEvent[index].enabled = false;
+}
+
+/* Events */
+Push Level_press
+{
+	integer index, i;
+	
+	index = getlastmodifiedarrayindex();
+	
+	if(Level_fb[index] = false)	//is the level active?
+	{
+		if(len(Level_Text_In[index]) > 0)	//if there is something in the text field
+		{
+			if(CheckLevelText(index) && CheckLevelTime(index))	//if both are true we are good to go.
+			{
+				EnableEvent(index);	
+				UpdateOutputText(index);
+				if((AutomationInUse() = 1) && Enable)	//if this is the first index actuated start the timer check
+					CheckTime();		
+			}
+			else
+				ShowMsg("Bad format in Text fields or value out of range. Could not create event!");
+		}
+		else	//if nothing is in the text field just enable the event based on stored values
+		{
+			EnableEvent(index);
+			if((AutomationInUse() = 1) && Enable)	//if this is the first index actuated start the timer check
+					CheckTime();			
+		}				
+	}
+	else
+	{
+		DisableEvent(index);
+		if(AutomationInUse() = 0)	//if eveything is turned off
+			cancelwait(Check_Time);	//cancel the wait
+	}
+}
+/*Change Level_Text_In
+{
+	integer index;
+	
+	index = getlastmodifiedarrayindex();
+	
+	//Level_Text_Out[index] = Level_Text_In[index];	
+}
+Change Level_Time_In
+{
+	integer index;
+	
+	index = getlastmodifiedarrayindex();
+	
+	//Level_Time_Out[index] = Level_Time_In[index];	
+}*/
+Push Enable
+{
+	if(AutomationInUse() > 0)	//if something is enable start it up
+		CheckTime();
+}
+Release Enable
+{
+	cancelwait(Check_Time);
+}
+/* Start Up Code */
+Function Main()
+{
+	integer i;
+	string hour[2], minute[2], AMPM[2];
+
+	// start up code goes here
+	waitforinitializationcomplete();
+			
+	//get existing values in memory and print them out
+	for(i = 1 to numOfLevels)
+	{
+		if(lvlEvent[i].actuateHour > 12)	//PM
+		{
+			hour = itoa(lvlEvent[i].actuateHour - 12);
+			AMPM = "PM";
+		}
+		else if(lvlEvent[i].actuateHour = 12)
+		{
+			hour = "12";
+			AMPM = "PM";
+		}
+		else if(lvlEvent[i].actuateHour = 0)	//AM
+		{
+			hour = "12";
+			AMPM = "AM";
+		}
+		else
+		{
+			hour = itoa(lvlEvent[i].actuateHour);
+			AMPM = "AM";
+		}
+		
+		if(lvlEvent[i].actuateMin >= 10)
+			minute = itoa(lvlEvent[i].actuateMin);
+		else
+			minute = "0" + itoa(lvlEvent[i].actuateMin);
+			
+		Level_Time_Out[i] = hour + ":" + minute + AMPM;
+		Level_Text_Out[i] = itoa(lvlEvent[i].actuateLevel);
+		Level_fb[i] = lvlEvent[i].enabled;
+	}
+	
+	//find if there are existing enable events and start the check
+	for(i = 1 to numOfLevels)
+	{
+		if(lvlEvent[i].enabled)
+		{
+			CheckTime();
+			break;
+		}
+	}
+}
+
